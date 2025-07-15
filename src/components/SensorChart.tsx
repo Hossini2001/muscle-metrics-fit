@@ -1,17 +1,46 @@
 import { Card } from "@/components/ui/card";
 import { useState, useEffect } from 'react';
+import { useBitalino, BitalinoData } from '@/hooks/useBitalino';
 
 interface SensorChartProps {
   title: string;
   type: 'emg' | 'ecg';
   color: string;
+  channelIndex?: number;
 }
 
-export const SensorChart = ({ title, type, color }: SensorChartProps) => {
+export const SensorChart = ({ title, type, color, channelIndex = 0 }: SensorChartProps) => {
   const [data, setData] = useState<Array<{ time: number; value: number }>>([]);
+  const { latestData, isStreaming } = useBitalino();
 
-  // Simulate real-time sensor data
+  // Update data when new Bitalino data arrives
   useEffect(() => {
+    if (latestData && isStreaming && latestData.analog[channelIndex] !== undefined) {
+      setData(prevData => {
+        const newData = [...prevData];
+        const time = latestData.timestamp % 10000;
+        
+        // Use real Bitalino data
+        const rawValue = latestData.analog[channelIndex];
+        // Convert 10-bit ADC value to meaningful signal
+        const value = ((rawValue / 1023) - 0.5) * 200; // Scale to ±100 range
+        
+        newData.push({ time, value });
+        
+        // Keep only last 100 points for smooth animation
+        if (newData.length > 100) {
+          newData.shift();
+        }
+        
+        return newData;
+      });
+    }
+  }, [latestData, isStreaming, channelIndex]);
+
+  // Fallback to simulated data when not connected
+  useEffect(() => {
+    if (isStreaming) return; // Don't simulate when real data is available
+    
     const interval = setInterval(() => {
       setData(prevData => {
         const newData = [...prevData];
@@ -41,7 +70,7 @@ export const SensorChart = ({ title, type, color }: SensorChartProps) => {
     }, 100);
 
     return () => clearInterval(interval);
-  }, [type]);
+  }, [type, isStreaming]);
 
   return (
     <Card className="p-6 shadow-card">
@@ -49,10 +78,12 @@ export const SensorChart = ({ title, type, color }: SensorChartProps) => {
         <h3 className="text-lg font-semibold">{title}</h3>
         <div className="flex items-center gap-2">
           <div 
-            className="w-3 h-3 rounded-full animate-pulse-glow"
-            style={{ backgroundColor: color }}
+            className={`w-3 h-3 rounded-full ${isStreaming ? 'animate-pulse-glow' : 'animate-pulse'}`}
+            style={{ backgroundColor: isStreaming ? color : 'hsl(var(--muted-foreground))' }}
           />
-          <span className="text-sm text-muted-foreground">Live</span>
+          <span className="text-sm text-muted-foreground">
+            {isStreaming ? 'Live' : 'Simulated'}
+          </span>
         </div>
       </div>
       
@@ -101,7 +132,12 @@ export const SensorChart = ({ title, type, color }: SensorChartProps) => {
         
         {/* Overlay text */}
         <div className="absolute top-4 right-4 text-xs text-muted-foreground bg-card/80 px-2 py-1 rounded">
-          {data.length > 0 && `${data[data.length - 1]?.value.toFixed(1)} μV`}
+          {data.length > 0 && `${data[data.length - 1]?.value.toFixed(1)} ${isStreaming ? 'ADC' : 'μV'}`}
+          {isStreaming && (
+            <div className="text-xs text-medical-blue mt-1">
+              CH{channelIndex}
+            </div>
+          )}
         </div>
       </div>
     </Card>

@@ -4,6 +4,7 @@ import { Button } from "@/components/ui/button";
 import { Activity, Heart, Zap, TrendingUp, AlertTriangle } from "lucide-react";
 import { SensorChart } from "./SensorChart";
 import { FatigueAnalysis } from "./FatigueAnalysis";
+import { BluetoothConnection } from "./BluetoothConnection";
 import heroBg from "@/assets/hero-bg.jpg";
 
 export const Dashboard = () => {
@@ -86,17 +87,20 @@ export const Dashboard = () => {
           </Card>
         </div>
 
-        {/* Main Charts */}
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        {/* Connection and Charts */}
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+          <BluetoothConnection />
           <SensorChart 
             title="EMG Signal - Muscle Activity"
             type="emg"
             color="hsl(var(--medical-blue))"
+            channelIndex={0}
           />
           <SensorChart 
             title="ECG Signal - Heart Activity"
             type="ecg"
             color="hsl(var(--health-green))"
+            channelIndex={1}
           />
         </div>
 
