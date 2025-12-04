@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useCallback } from 'react';
 import { useToast } from '@/hooks/use-toast';
 
 // Web Bluetooth API type declarations
@@ -13,6 +13,7 @@ declare global {
   
   interface RequestDeviceOptions {
     filters?: BluetoothLEScanFilter[];
+    acceptAllDevices?: boolean;
     optionalServices?: BluetoothServiceUUID[];
   }
   
@@ -69,13 +70,15 @@ export interface BitalinoDevice {
   device: BluetoothDevice;
   server?: BluetoothRemoteGATTServer;
   service?: BluetoothRemoteGATTService;
-  characteristic?: BluetoothRemoteGATTCharacteristic;
+  txCharacteristic?: BluetoothRemoteGATTCharacteristic;
+  rxCharacteristic?: BluetoothRemoteGATTCharacteristic;
   isConnected: boolean;
 }
 
-const BITALINO_SERVICE_UUID = '6e400001-b5a3-f393-e0a9-e50e24dcca9e';
-const BITALINO_RX_CHARACTERISTIC_UUID = '6e400002-b5a3-f393-e0a9-e50e24dcca9e';
-const BITALINO_TX_CHARACTERISTIC_UUID = '6e400003-b5a3-f393-e0a9-e50e24dcca9e';
+// Nordic UART Service UUIDs (used by Bitalino BLE)
+const NORDIC_UART_SERVICE = '6e400001-b5a3-f393-e0a9-e50e24dcca9e';
+const NORDIC_UART_RX = '6e400002-b5a3-f393-e0a9-e50e24dcca9e'; // Write to device
+const NORDIC_UART_TX = '6e400003-b5a3-f393-e0a9-e50e24dcca9e'; // Receive from device
 
 export const useBitalino = () => {
   const [device, setDevice] = useState<BitalinoDevice | null>(null);
@@ -83,74 +86,6 @@ export const useBitalino = () => {
   const [isStreaming, setIsStreaming] = useState(false);
   const [latestData, setLatestData] = useState<BitalinoData | null>(null);
   const { toast } = useToast();
-
-  const connect = useCallback(async () => {
-    if (!navigator.bluetooth) {
-      toast({
-        title: "Bluetooth Not Supported",
-        description: "Web Bluetooth is not supported in this browser",
-        variant: "destructive"
-      });
-      return;
-    }
-
-    setIsConnecting(true);
-    try {
-      const bluetoothDevice = await navigator.bluetooth.requestDevice({
-        filters: [
-          { name: 'BITalino' },
-          { namePrefix: 'BITalino' },
-          { services: [BITALINO_SERVICE_UUID] }
-        ],
-        optionalServices: [BITALINO_SERVICE_UUID]
-      });
-
-      bluetoothDevice.addEventListener('gattserverdisconnected', handleDisconnection);
-
-      const server = await bluetoothDevice.gatt?.connect();
-      if (!server) throw new Error('Failed to connect to GATT server');
-
-      const service = await server.getPrimaryService(BITALINO_SERVICE_UUID);
-      const characteristic = await service.getCharacteristic(BITALINO_TX_CHARACTERISTIC_UUID);
-
-      const newDevice: BitalinoDevice = {
-        device: bluetoothDevice,
-        server,
-        service,
-        characteristic,
-        isConnected: true
-      };
-
-      setDevice(newDevice);
-      
-      toast({
-        title: "Connected to Bitalino",
-        description: `Connected to ${bluetoothDevice.name || 'Bitalino device'}`,
-      });
-
-    } catch (error) {
-      console.error('Bluetooth connection error:', error);
-      toast({
-        title: "Connection Failed",
-        description: "Failed to connect to Bitalino device",
-        variant: "destructive"
-      });
-    } finally {
-      setIsConnecting(false);
-    }
-  }, [toast]);
-
-  const disconnect = useCallback(async () => {
-    if (device?.server) {
-      await stopStreaming();
-      device.server.disconnect();
-      setDevice(null);
-      toast({
-        title: "Disconnected",
-        description: "Disconnected from Bitalino device",
-      });
-    }
-  }, [device]);
 
   const handleDisconnection = useCallback(() => {
     setDevice(null);
@@ -162,73 +97,83 @@ export const useBitalino = () => {
     });
   }, [toast]);
 
-  const startStreaming = useCallback(async (sampleRate: number = 1000, channels: number[] = [0, 1]) => {
-    if (!device?.characteristic) return;
-
-    try {
-      // Start notifications
-      await device.characteristic.startNotifications();
-      device.characteristic.addEventListener('characteristicvaluechanged', handleDataReceived);
-
-      // Send start command to Bitalino
-      const startCommand = new Uint8Array([0x01, sampleRate & 0xFF, (sampleRate >> 8) & 0xFF, channels.length, ...channels]);
-      
-      const rxCharacteristic = await device.service?.getCharacteristic(BITALINO_RX_CHARACTERISTIC_UUID);
-      if (rxCharacteristic) {
-        await rxCharacteristic.writeValue(startCommand);
-      }
-
-      setIsStreaming(true);
+  const connect = useCallback(async () => {
+    if (!navigator.bluetooth) {
       toast({
-        title: "Streaming Started",
-        description: `Acquiring data at ${sampleRate}Hz`,
-      });
-
-    } catch (error) {
-      console.error('Failed to start streaming:', error);
-      toast({
-        title: "Streaming Failed",
-        description: "Failed to start data acquisition",
+        title: "Bluetooth Not Supported",
+        description: "Use Chrome, Edge, or Opera browser for Bluetooth",
         variant: "destructive"
       });
+      return;
     }
-  }, [device, toast]);
 
-  const stopStreaming = useCallback(async () => {
-    if (!device?.characteristic) return;
-
+    setIsConnecting(true);
     try {
-      // Send stop command
-      const stopCommand = new Uint8Array([0x00]);
-      const rxCharacteristic = await device.service?.getCharacteristic(BITALINO_RX_CHARACTERISTIC_UUID);
-      if (rxCharacteristic) {
-        await rxCharacteristic.writeValue(stopCommand);
-      }
+      // Allow all devices to show in picker for maximum compatibility
+      const bluetoothDevice = await navigator.bluetooth.requestDevice({
+        acceptAllDevices: true,
+        optionalServices: [NORDIC_UART_SERVICE]
+      });
 
-      // Stop notifications
-      await device.characteristic.stopNotifications();
-      device.characteristic.removeEventListener('characteristicvaluechanged', handleDataReceived);
+      bluetoothDevice.addEventListener('gattserverdisconnected', handleDisconnection);
 
-      setIsStreaming(false);
+      const server = await bluetoothDevice.gatt?.connect();
+      if (!server) throw new Error('Failed to connect to GATT server');
+
+      const service = await server.getPrimaryService(NORDIC_UART_SERVICE);
+      const txCharacteristic = await service.getCharacteristic(NORDIC_UART_TX);
+      const rxCharacteristic = await service.getCharacteristic(NORDIC_UART_RX);
+
+      const newDevice: BitalinoDevice = {
+        device: bluetoothDevice,
+        server,
+        service,
+        txCharacteristic,
+        rxCharacteristic,
+        isConnected: true
+      };
+
+      setDevice(newDevice);
+      
       toast({
-        title: "Streaming Stopped",
-        description: "Data acquisition stopped",
+        title: "Connected",
+        description: `Connected to ${bluetoothDevice.name || 'Bitalino device'}`,
       });
 
     } catch (error) {
-      console.error('Failed to stop streaming:', error);
+      console.error('Bluetooth connection error:', error);
+      toast({
+        title: "Connection Failed",
+        description: error instanceof Error ? error.message : "Failed to connect",
+        variant: "destructive"
+      });
+    } finally {
+      setIsConnecting(false);
     }
-  }, [device, toast]);
+  }, [toast, handleDisconnection]);
+
+  const disconnect = useCallback(async () => {
+    if (device?.server) {
+      if (isStreaming) {
+        await stopStreaming();
+      }
+      device.server.disconnect();
+      setDevice(null);
+      toast({
+        title: "Disconnected",
+        description: "Device disconnected",
+      });
+    }
+  }, [device, isStreaming]);
 
   const handleDataReceived = useCallback((event: Event) => {
     const target = event.target as unknown as BluetoothRemoteGATTCharacteristic;
     const value = target.value;
     if (!value) return;
 
-    // Parse Bitalino data packet
     const data = new Uint8Array(value.buffer);
     
-    // Bitalino frame format: [sequence(4bits) + digital(4bits), analog0(10bits), analog1(10bits), ...]
+    // Parse Bitalino frame format
     if (data.length >= 2) {
       const sequence = data[0] >> 4;
       const digital = [(data[0] & 0x0F)];
@@ -241,16 +186,62 @@ export const useBitalino = () => {
         }
       }
 
-      const bitalinoData: BitalinoData = {
+      setLatestData({
         sequence,
         digital,
         analog,
         timestamp: Date.now()
-      };
-
-      setLatestData(bitalinoData);
+      });
     }
   }, []);
+
+  const startStreaming = useCallback(async (sampleRate: number = 1000, channels: number[] = [0, 1]) => {
+    if (!device?.txCharacteristic || !device?.rxCharacteristic) return;
+
+    try {
+      await device.txCharacteristic.startNotifications();
+      device.txCharacteristic.addEventListener('characteristicvaluechanged', handleDataReceived);
+
+      // Bitalino start command
+      const startCommand = new Uint8Array([0x01, sampleRate & 0xFF, (sampleRate >> 8) & 0xFF, channels.length, ...channels]);
+      await device.rxCharacteristic.writeValue(startCommand);
+
+      setIsStreaming(true);
+      toast({
+        title: "Streaming Started",
+        description: `Acquiring at ${sampleRate}Hz`,
+      });
+
+    } catch (error) {
+      console.error('Failed to start streaming:', error);
+      toast({
+        title: "Streaming Failed",
+        description: "Failed to start data acquisition",
+        variant: "destructive"
+      });
+    }
+  }, [device, toast, handleDataReceived]);
+
+  const stopStreaming = useCallback(async () => {
+    if (!device?.txCharacteristic || !device?.rxCharacteristic) return;
+
+    try {
+      const stopCommand = new Uint8Array([0x00]);
+      await device.rxCharacteristic.writeValue(stopCommand);
+
+      await device.txCharacteristic.stopNotifications();
+      device.txCharacteristic.removeEventListener('characteristicvaluechanged', handleDataReceived);
+
+      setIsStreaming(false);
+      toast({
+        title: "Streaming Stopped",
+        description: "Data acquisition stopped",
+      });
+
+    } catch (error) {
+      console.error('Failed to stop streaming:', error);
+    }
+  }, [device, toast, handleDataReceived]);
 
   return {
     device,
